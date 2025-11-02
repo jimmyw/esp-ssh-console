@@ -1,0 +1,10 @@
+.cache/
+.devcontainer/
+.vscode/
+README.md
+build/
+dependencies.lock
+managed_components/
+pytest_console_advanced.py
+sdkconfig
+sdkconfig.old
