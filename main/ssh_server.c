@@ -37,7 +37,10 @@
 #define MAX_SSH_SIGNALS 3
 #define WRITE_BUFFER_SIZE 256
 #define READ_BUFFER_SIZE 256
-
+#define VFS_FD_TO_CHANNEL_INDEX(fd) ((fd) >> 1)
+#define VFS_FD_IS_WRITE(fd) ((fd) & 1)
+#define VFS_FD_IS_READ(fd) (!((fd) & 1))
+#define CHANNEL_INDEX_TO_VFS_FD(ch_idx, is_write) (((ch_idx) << 1) | ((is_write) ? 1 : 0))
 
 
 static const char *TAG = "ssh_server";
@@ -65,22 +68,21 @@ typedef struct {
     MessageBufferHandle_t write_buffer; // For VFS → SSH data flow
     signal_context_t signals[MAX_SSH_SIGNALS];
     ssh_server_config_t *config;
+    struct ssh_channel_callbacks_struct *channel_cb;
 } ssh_vfs_context_t;
 
 // Mapped to local fd
 static ssh_vfs_context_t channels[MAX_SSH_CHANNELS];
+#define CHANNEL_INDEX_FROM_PTR(ctx) ((ctx) - channels)
 
 static void trigger_select_for_channel(int fd, bool read, bool write, bool except);
 
 // Call with NULL to find a free spot.
-static ssh_vfs_context_t *get_context_for_channel(ssh_channel channel, int *index_out)
+static ssh_vfs_context_t *allocate_new_channel_context()
 {
     for (int i = 0; i < ARRAY_SIZE(channels); i++) {
         ssh_vfs_context_t *ctx = &channels[i];
-        if (ctx->channel == channel) {
-            if (index_out) {
-                *index_out = i;
-            }
+        if (!ctx->channel) {
             return ctx;
         }
     }
@@ -192,22 +194,17 @@ bail_out:
 static int shell_request(ssh_session session, ssh_channel channel, void *userdata)
 {
     ESP_LOGD(TAG, "Shell requested");
-    // ssh_server_config_t *config = (ssh_server_config_t *)userdata;
-    int index;
-    ssh_vfs_context_t *ctx = get_context_for_channel(channel, &index);
-    if (!ctx) {
-        ESP_LOGD(TAG, "Shell requested but channel context not found");
-        return SSH_ERROR;
-    }
+    ssh_vfs_context_t *ctx = (ssh_vfs_context_t *)userdata;
+    int ch_idx = CHANNEL_INDEX_FROM_PTR(ctx);
 
-    ESP_LOGD(TAG, "Channel %d registering VFS fd", index);
+    ESP_LOGD(TAG, "Channel %d registering VFS fd", ch_idx);
 
-    esp_err_t res = esp_vfs_register_fd_with_local_fd(s_pipe_vfs_id, index << 1, false, &ctx->stdin_fd);
+    esp_err_t res = esp_vfs_register_fd_with_local_fd(s_pipe_vfs_id, CHANNEL_INDEX_TO_VFS_FD(ch_idx, false), false, &ctx->stdin_fd);
     if (res != ESP_OK) {
         ESP_LOGD(TAG, "Failed to register VFS fd: %d", res);
         return SSH_ERROR;
     }
-    res = esp_vfs_register_fd_with_local_fd(s_pipe_vfs_id, index << 1 | 1, false, &ctx->stdout_fd);
+    res = esp_vfs_register_fd_with_local_fd(s_pipe_vfs_id, CHANNEL_INDEX_TO_VFS_FD(ch_idx, true), false, &ctx->stdout_fd);
     if (res != ESP_OK) {
         ESP_LOGD(TAG, "Failed to register VFS fd: %d", res);
         return SSH_ERROR;
@@ -236,18 +233,11 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
  */
 static int channel_data(ssh_session session, ssh_channel channel, void *data, uint32_t len, int is_stderr, void *userdata)
 {
+    ssh_vfs_context_t *ctx = (ssh_vfs_context_t *)userdata;
     (void)session;
     (void)is_stderr;
     (void)userdata;
 
-    // Find the channel context
-    ssh_vfs_context_t *ctx = get_context_for_channel(channel, NULL);
-
-    if (!ctx || !ctx->read_buffer) {
-        ESP_LOGW(TAG, "Channel data received but no context/buffer found");
-        trigger_select_for_channel(ctx->stdin_fd, false, false, true);
-        return 0;
-    }
 
     // Send data to message buffer (non-blocking), blocking time max
     size_t bytes_sent = xMessageBufferSend(ctx->read_buffer, data, len, portMAX_DELAY);
@@ -256,8 +246,8 @@ static int channel_data(ssh_session session, ssh_channel channel, void *data, ui
         ESP_LOGW(TAG, "Message buffer full, sent %zu/%u bytes", bytes_sent, len);
     } else {
         ESP_LOGD(TAG, "Sent %u bytes to read_buffer", len);
-        trigger_select_for_channel(ctx->stdin_fd, true, false, false);
     }
+    trigger_select_for_channel(ctx->stdin_fd, true, false, false);
 
     return len; // Always return len to libssh (we handled what we could)
 }
@@ -503,22 +493,23 @@ static esp_err_t ssh_vfs_end_select(void *end_select_args)
  */
 static ssize_t ssh_vfs_read(int fd, void *data, size_t size)
 {
-    fd = fd >> 1;
-    if (fd >= ARRAY_SIZE(channels) || channels[fd].channel == NULL || channels[fd].read_buffer == NULL) {
+    size_t ch_idx = VFS_FD_TO_CHANNEL_INDEX(fd);
+    if (ch_idx >= ARRAY_SIZE(channels) || channels[ch_idx].channel == NULL || channels[ch_idx].read_buffer == NULL) {
         errno = EBADF;
+        ESP_LOGE(TAG, "Invalid file descriptor %d", fd);
         return -1;
     }
 
 
 
     // Block until data is available (with timeout)
-    size_t bytes_received = xMessageBufferReceive(channels[fd].read_buffer, data, size,
+    size_t bytes_received = xMessageBufferReceive(channels[ch_idx].read_buffer, data, size,
                                                   portMAX_DELAY // 1 second timeout
     );
 
     if (bytes_received == 0) {
         // Timeout - check if channel is still open
-        if (!ssh_channel_is_open(channels[fd].channel)) {
+        if (!ssh_channel_is_open(channels[ch_idx].channel)) {
             errno = EPIPE;
             return -1;
         }
@@ -551,14 +542,14 @@ static ssize_t ssh_vfs_read(int fd, void *data, size_t size)
  */
 static ssize_t ssh_vfs_write(int fd, const void *data, size_t size)
 {
-    fd = fd >> 1;
-    if (fd >= ARRAY_SIZE(channels) || channels[fd].channel == NULL || channels[fd].write_buffer == NULL) {
+    size_t ch_idx = VFS_FD_TO_CHANNEL_INDEX(fd);
+    if (ch_idx >= ARRAY_SIZE(channels) || channels[ch_idx].channel == NULL || channels[ch_idx].write_buffer == NULL) {
         errno = EBADF;
         ESP_LOGE(TAG, "Invalid file descriptor %d", fd);
         return -1;
     }
 
-    ssh_channel channel = channels[fd].channel;
+    ssh_channel channel = channels[ch_idx].channel;
 
     // Check if channel is still open
     if (!ssh_channel_is_open(channel)) {
@@ -611,13 +602,13 @@ static ssize_t ssh_vfs_write(int fd, const void *data, size_t size)
             }
         }
 
-        ESP_LOGD(TAG, "Sent %zu bytes (translated from %zu) to write_buffer index %d", translated_size, size, fd);
+        ESP_LOGD(TAG, "Sent %zu bytes (translated from %zu) to write_buffer index %d", translated_size, size, ch_idx);
         data_to_send = translated_data;
         size_to_send = dst_idx;
     }
 
     // Send translated data to write buffer (blocking with max delay)
-    size_t bytes_sent = xMessageBufferSend(channels[fd].write_buffer, data_to_send, size_to_send, portMAX_DELAY);
+    size_t bytes_sent = xMessageBufferSend(channels[ch_idx].write_buffer, data_to_send, size_to_send, portMAX_DELAY);
 
     // If we allocated a new buffer, free it
     if (data_to_send != data) {
@@ -654,28 +645,30 @@ static ssize_t ssh_vfs_write(int fd, const void *data, size_t size)
  */
 static int ssh_vfs_close(int fd)
 {
-    fd = fd >> 1;
-    if (fd >= ARRAY_SIZE(channels) || channels[fd].channel == NULL) {
+    size_t ch_idx = VFS_FD_TO_CHANNEL_INDEX(fd);
+    if (ch_idx >= ARRAY_SIZE(channels) || channels[ch_idx].channel == NULL) {
+        errno = EBADF;
+        ESP_LOGE(TAG, "Invalid file descriptor %d", fd);
         return -1;
     }
 
-    ssh_channel channel = channels[fd].channel;
+    ssh_channel channel = channels[ch_idx].channel;
 
     // Clean up message buffers
-    if (channels[fd].read_buffer) {
-        vMessageBufferDelete(channels[fd].read_buffer);
-        channels[fd].read_buffer = NULL;
+    if (channels[ch_idx].read_buffer) {
+        vMessageBufferDelete(channels[ch_idx].read_buffer);
+        channels[ch_idx].read_buffer = NULL;
     }
-    if (channels[fd].write_buffer) {
-        vMessageBufferDelete(channels[fd].write_buffer);
-        channels[fd].write_buffer = NULL;
+    if (channels[ch_idx].write_buffer) {
+        vMessageBufferDelete(channels[ch_idx].write_buffer);
+        channels[ch_idx].write_buffer = NULL;
     }
 
     // Clean up SSH channel
     ssh_channel_send_eof(channel);
     ssh_channel_close(channel);
     ssh_channel_free(channel);
-    channels[fd].channel = NULL;
+    channels[ch_idx].channel = NULL;
 
     return 0;
 }
@@ -693,14 +686,28 @@ static int ssh_vfs_close(int fd)
  */
 static int ssh_vfs_fcntl(int fd, int cmd, int flags)
 {
-    ESP_LOGI(TAG, "ssh_vfs_fcntl called with fd=%d, cmd=%d, flags=%d", fd, cmd, flags);
+    size_t ch_idx = VFS_FD_TO_CHANNEL_INDEX(fd);
+    if (ch_idx >= ARRAY_SIZE(channels) || channels[ch_idx].channel == NULL) {
+        errno = EBADF;
+        ESP_LOGE(TAG, "Invalid file descriptor %d", fd);
+        return -1;
+    }
 
-    if (fd & 1) {
-        ESP_LOGI(TAG, "ssh_vfs_fcntl called on write fd");
-        return O_WRONLY;
-    } else {
-        ESP_LOGI(TAG, "ssh_vfs_fcntl called on read fd");
-        return O_RDONLY;
+    ESP_LOGD(TAG, "ssh_vfs_fcntl called with fd=%d, cmd=%d, flags=%d", fd, cmd, flags);
+
+    switch (cmd) {
+        case F_GETFL:
+            // Return the file access mode and status flags
+            return VFS_FD_IS_WRITE(fd) ? O_WRONLY : O_RDONLY;
+
+        case F_SETFL:
+            // We don't support changing flags (non-blocking, etc.)
+            // Just return success
+            return 0;
+
+        default:
+            errno = EINVAL;
+            return -1;
     }
 }
 
@@ -932,21 +939,15 @@ static int auth_publickey(ssh_session session, const char *user, struct ssh_key_
 
 static void vfs_channel_close(ssh_session session, ssh_channel channel, void *userdata)
 {
-    ssh_server_config_t *config = (ssh_server_config_t *)userdata;
+    ssh_vfs_context_t *ctx = (ssh_vfs_context_t *)userdata;
     ESP_LOGI(TAG, "Channel close requested");
-    int index;
-    ssh_vfs_context_t *ctx = get_context_for_channel(channel, &index);
-    if (!ctx) {
-        ESP_LOGD(TAG, "Channel close requested but channel context not found");
-        return;
-    }
 
     // Trigger select to wake up any pending operations
     trigger_select_for_channel(ctx->stdin_fd, false, false, true);
     trigger_select_for_channel(ctx->stdout_fd, false, false, true);
 
     // Close the VFS fds
-    if (config->shell_task_kill_on_disconnect && ctx->shell_task_handle) {
+    if (ctx->config->shell_task_kill_on_disconnect && ctx->shell_task_handle) {
         vTaskDelete(ctx->shell_task_handle);
         ctx->shell_task_handle = NULL;
     }
@@ -960,18 +961,32 @@ static void vfs_channel_close(ssh_session session, ssh_channel channel, void *us
         esp_vfs_unregister_fd(s_pipe_vfs_id, ctx->stdout_fd);
         ctx->stdout_fd = -1;
     }
+    if (ctx->read_buffer) {
+        vMessageBufferDelete(ctx->read_buffer);
+        ctx->read_buffer = NULL;
+    }
+    if (ctx->write_buffer) {
+        vMessageBufferDelete(ctx->write_buffer);
+        ctx->write_buffer = NULL;
+    }
+    if (ctx->channel_cb) {
+        free(ctx->channel_cb);
+        ctx->channel_cb = NULL;
+    }
+
+    // Do we need to clean up SSH channel?
+    //if (ctx->channel) {
+    //    ssh_channel_send_eof(ctx->channel);
+    //    ssh_channel_close(ctx->channel);
+    //    ssh_channel_free(ctx->channel);
+    //    ctx->channel = NULL;
+    //}
 
     // Free the channel context
     memset(ctx, 0, sizeof(ssh_vfs_context_t));
 }
 
-struct ssh_channel_callbacks_struct channel_cb = {
-    .userdata = NULL,
-    .channel_pty_request_function = pty_request,
-    .channel_shell_request_function = shell_request,
-    .channel_close_function = vfs_channel_close,
-    .channel_data_function = channel_data, // Add data handler for message buffer
-};
+
 
 /**
  * @brief SSH channel open callback
@@ -992,16 +1007,16 @@ struct ssh_channel_callbacks_struct channel_cb = {
  */
 static ssh_channel channel_open(ssh_session session, void *userdata)
 {
-    // ssh_server_config_t *config = (ssh_server_config_t *)userdata;
+    ssh_server_config_t *config = (ssh_server_config_t *)userdata;
 
-    int index;
-    ssh_vfs_context_t *ctx = get_context_for_channel(NULL, &index);
+    ssh_vfs_context_t *ctx = allocate_new_channel_context();
     if (ctx == NULL) {
         ESP_LOGD(TAG, "No free channel found");
         return NULL;
     }
 
     ESP_LOGD(TAG, "Opening new channel");
+    ctx->config = config;
     ctx->channel = ssh_channel_new(session);
     if (!ctx->channel) {
         ESP_LOGD(TAG, "Failed to create new channel");
@@ -1027,14 +1042,27 @@ static ssh_channel channel_open(ssh_session session, void *userdata)
         ctx->channel = NULL;
         return NULL;
     }
-    ctx->config = (ssh_server_config_t *)userdata;
 
-    ESP_LOGD(TAG, "Channel %d session opened, setting callbacks", index);
+    ESP_LOGD(TAG, "Channel %d session opened, setting callbacks", CHANNEL_INDEX_FROM_PTR(ctx));
 
-    ssh_callbacks_init(&channel_cb);
-    ssh_set_channel_callbacks(ctx->channel, &channel_cb);
+    ctx->channel_cb = malloc(sizeof(struct ssh_channel_callbacks_struct));
+    if (!ctx->channel_cb) {
+        ESP_LOGD(TAG, "Failed to allocate memory for channel callbacks");
+        ssh_channel_free(ctx->channel);
+        ctx->channel = NULL;
+        return NULL;
+    }
+    *ctx->channel_cb = (struct ssh_channel_callbacks_struct){
+        .userdata = ctx,
+        .channel_pty_request_function = pty_request,
+        .channel_shell_request_function = shell_request,
+        .channel_close_function = vfs_channel_close,
+        .channel_data_function = channel_data, // Add data handler for message buffer
+    };
+    ssh_callbacks_init(ctx->channel_cb);
+    ssh_set_channel_callbacks(ctx->channel, ctx->channel_cb);
 
-    ESP_LOGD(TAG, "Channel %d created with read/write buffers and fd: %d, %d", index, ctx->stdin_fd, ctx->stdout_fd);
+    ESP_LOGD(TAG, "Channel %d created", CHANNEL_INDEX_FROM_PTR(ctx));
 
     return ctx->channel;
 }
