@@ -389,6 +389,12 @@ static esp_err_t ssh_vfs_start_select(int nfds, fd_set *readfds, fd_set *writefd
             }
         }
 
+        if (exceptfds && FD_ISSET(i, exceptfds)) {
+            if (!ssh_channel_is_open(ctx->channel)) {
+                fd_ready = true;
+            }
+        }
+
         // Signal if any fd is ready
         if (fd_ready) {
             esp_vfs_select_triggered(signal_sem);
@@ -459,6 +465,13 @@ static esp_err_t ssh_vfs_end_select(void *end_select_args)
                 // If channel is closed, mark as ready (write will fail with error)
                 if (ssh_channel_is_open(channels[i].channel)) {
                     FD_CLR(i, sig_ctx->write_fds);
+                }
+            }
+
+            if (sig_ctx->error_fds && FD_ISSET(i, sig_ctx->error_fds)) {
+                clear = true;
+                if (ssh_channel_is_open(channels[i].channel)) {
+                    FD_CLR(i, sig_ctx->error_fds);
                 }
             }
 
