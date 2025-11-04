@@ -78,6 +78,7 @@ typedef struct {
     MessageBufferHandle_t read_buffer;  // For SSH → VFS data flow
     MessageBufferHandle_t write_buffer; // For VFS → SSH data flow
     signal_context_t signals[5];
+    ssh_server_config_t *config;
 } ssh_vfs_context_t;
 
 // Mapped to local fd
@@ -188,7 +189,7 @@ static void app_shell(void *arg)
     //__getreent()->_stderr = fdopen(fd, "w");
 
     while (ssh_channel_is_open(channel) && !ssh_channel_is_eof(channel)) {
-        run_linenoise_console("esp-ssh-server> ");
+        run_linenoise_console(ctx->config->prompt);
     }
 bail_out:
     __getreent()->_stdin = orig_stdin;
@@ -218,6 +219,7 @@ bail_out:
 static int shell_request(ssh_session session, ssh_channel channel, void *userdata)
 {
     ESP_LOGD(TAG, "Shell requested");
+    ssh_server_config_t *config = (ssh_server_config_t *)userdata;
     int index;
     ssh_vfs_context_t *ctx = get_context_for_channel(channel, &index);
     if (!ctx) {
@@ -975,7 +977,7 @@ struct ssh_channel_callbacks_struct channel_cb = {
  */
 static ssh_channel channel_open(ssh_session session, void *userdata)
 {
-    (void)userdata;
+    //ssh_server_config_t *config = (ssh_server_config_t *)userdata;
 
     int index;
     ssh_vfs_context_t *ctx = get_context_for_channel(NULL, &index);
@@ -1010,6 +1012,7 @@ static ssh_channel channel_open(ssh_session session, void *userdata)
         ctx->channel = NULL;
         return NULL;
     }
+    ctx->config = (ssh_server_config_t *)userdata;
 
     ESP_LOGD(TAG, "Channel %d session opened, setting callbacks", index);
 
@@ -1053,7 +1056,7 @@ static int ssh_event_fd_wrapper_callback(socket_t fd, int revents, void *userdat
     return SSH_OK;
 }
 
-static void ssh_server(void *parameters)
+static void ssh_server_internal(ssh_server_config_t *config)
 {
 
     ssh_bind sshbind;
@@ -1143,7 +1146,7 @@ static void ssh_server(void *parameters)
 
         // Set up server callbacks
         struct ssh_server_callbacks_struct server_cb = {
-            .userdata = NULL,
+            .userdata = config,
             .auth_none_function = auth_none,
 #if ALLOW_PASSWORD_AUTH
             .auth_password_function = auth_password,
@@ -1269,9 +1272,19 @@ static void ssh_server(void *parameters)
     ssh_finalize();
 }
 
-void app_server(void *parameters)
+static void ssh_server(void *ctx)
 {
+    ssh_server_config_t *config = (ssh_server_config_t *)ctx;
+    // Run the SSH server indefinitely
     while (1) {
-        ssh_server(parameters);
+        ssh_server_internal(config);
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
+}
+
+void ssh_server_start(ssh_server_config_t *config)
+{
+    ESP_LOGI(TAG, "Starting SSH server...");
+    xTaskCreate(&ssh_server, "ssh_server", 8192, (void *)config, 5, NULL);
+
 }

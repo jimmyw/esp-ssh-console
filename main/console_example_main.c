@@ -216,8 +216,12 @@ void app_main(void)
     ESP_LOGI(TAG, "Network connected successfully, ensuring TCP/IP stack is ready...");
     vTaskDelay(pdMS_TO_TICKS(2000));
 
-    ESP_LOGI(TAG, "Starting SSH server...");
-    xTaskCreate(&app_server, "app_server", 8192, (void *)prompt, 5, NULL);
+    ssh_server_config_t server_config = {
+        .prompt = prompt,
+    };
+
+    ssh_server_start(&server_config);
+
     /* Main loop */
     while(true) {
         run_linenoise_console(prompt);
