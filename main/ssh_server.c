@@ -1056,7 +1056,16 @@ static void ssh_server_internal(ssh_server_config_t *config)
     ssh_session session;
     ssh_event event;
     int rc;
-    const char *port = DEFAULT_PORT;
+
+
+    if (!config) {
+        ESP_LOGE(TAG, "Invalid SSH server configuration");
+        return;
+    }
+    if (config->port == NULL || config->bindaddr == NULL) {
+        ESP_LOGE(TAG, "Invalid SSH server port or bind address, aborting");
+        return;
+    }
 
     // Wait a bit more to ensure network stack is fully ready
     ESP_LOGD(TAG, "SSH Server starting, waiting for network stack...");
@@ -1093,8 +1102,8 @@ static void ssh_server_internal(ssh_server_config_t *config)
     }
 
     // Set bind options
-    ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_BINDADDR, "0.0.0.0");
-    ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_BINDPORT_STR, port);
+    ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_BINDADDR, config->bindaddr);
+    ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_BINDPORT_STR, config->port);
 #ifdef DEBUG_LEVEL
     ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_LOG_VERBOSITY_STR, DEBUG_LEVEL);
 #endif
@@ -1109,13 +1118,13 @@ static void ssh_server_internal(ssh_server_config_t *config)
     // Listen for connections
     rc = ssh_bind_listen(sshbind);
     if (rc != SSH_OK) {
-        ESP_LOGE(TAG, "Failed to listen on 0.0.0.0:%s: %s", port, ssh_get_error(sshbind));
+        ESP_LOGE(TAG, "Failed to listen on %s:%s: %s", config->bindaddr, config->port, ssh_get_error(sshbind));
         ESP_LOGE(TAG, "This could indicate that the network stack is not ready yet.");
         ssh_bind_free(sshbind);
         return;
     }
 
-    ESP_LOGD(TAG, "Simple SSH Server listening on 0.0.0.0:%s", port);
+    ESP_LOGD(TAG, "Simple SSH Server listening on %s:%s", config->bindaddr, config->port);
 #if ALLOW_PASSWORD_AUTH
     ESP_LOGD(TAG, "Default credentials: %s/%s", DEFAULT_USERNAME, DEFAULT_PASSWORD);
 #endif

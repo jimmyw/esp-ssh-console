@@ -215,6 +215,8 @@ void app_main(void)
         .shell_func = run_linenoise_console,
         .shell_func_ctx = (void *)prompt,
         .shell_task_size = 8192,
+        .bindaddr = "0.0.0.0",
+        .port = "22",
     };
     ssh_server_start(&server_config);
 
