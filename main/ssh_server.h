@@ -1,3 +1,7 @@
+#include <stdint.h>
+#include "esp_err.h"
+
+
 typedef void (*ssh_shell_func_t)(void *ctx);
 
 typedef struct {
@@ -17,4 +21,4 @@ typedef struct {
     bool shell_task_kill_on_disconnect; // Whether to kill the shell task when the SSH channel is closed, can be dangerous.
 } ssh_server_config_t;
 
-void ssh_server_start(ssh_server_config_t *config);
+esp_err_t ssh_server_start(ssh_server_config_t *config);

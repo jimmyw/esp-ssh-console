@@ -1300,8 +1300,17 @@ static void ssh_server(void *ctx)
     }
 }
 
-void ssh_server_start(ssh_server_config_t *config)
+esp_err_t ssh_server_start(ssh_server_config_t *config)
 {
+    if (config == NULL) {
+        ESP_LOGE(TAG, "Invalid SSH server configuration");
+        return ESP_ERR_INVALID_ARG;
+    }
     ESP_LOGI(TAG, "Starting SSH server...");
-    xTaskCreate(&ssh_server, "ssh_server", 8192, (void *)config, 5, NULL);
+    BaseType_t ret = xTaskCreate(&ssh_server, "ssh_server", 8192, (void *)config, 5, NULL);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create SSH server task");
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
