@@ -96,7 +96,7 @@ static ssh_vfs_context_t *get_context_for_channel(ssh_channel channel, int *inde
  */
 static void drain_write_buffers(void)
 {
-    char write_data[512];
+    char write_data[WRITE_BUFFER_SIZE];
 
     for (int i = 0; i < ARRAY_SIZE(channels); i++) {
         ssh_vfs_context_t *ctx = &channels[i];
