@@ -38,16 +38,7 @@
 #define WRITE_BUFFER_SIZE 256
 #define READ_BUFFER_SIZE 256
 
-// Authentication methods
-#if CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH && CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
-#define ALLOW_AUTH_METHODS (SSH_AUTH_METHOD_PASSWORD | SSH_AUTH_METHOD_PUBLICKEY)
-#elif CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
-#define ALLOW_AUTH_METHODS (SSH_AUTH_METHOD_PASSWORD)
-#elif CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
-#define ALLOW_AUTH_METHODS (SSH_AUTH_METHOD_PUBLICKEY)
-#else
-#define ALLOW_AUTH_METHODS (0)
-#endif
+
 
 static const char *TAG = "ssh_server";
 
@@ -727,8 +718,24 @@ static const esp_vfs_t vfs = {
  */
 static int auth_none(ssh_session session, const char *user, void *userdata)
 {
+    ssh_server_config_t *config = (ssh_server_config_t *)userdata;
     ESP_LOGD(TAG, "Auth none requested for user: %s", user);
-    ssh_set_auth_methods(session, ALLOW_AUTH_METHODS);
+
+    // Authentication methods
+    int methods = 0;
+#ifdef CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
+    if (config->password != NULL && strlen(config->password) > 0) {
+        methods |= SSH_AUTH_METHOD_PASSWORD;
+    }
+#endif
+#ifdef CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
+    if (config->allowed_pubkeys != NULL && strlen(config->allowed_pubkeys) > 0) {
+        methods |= SSH_AUTH_METHOD_PUBLICKEY;
+    }
+#endif
+
+
+    ssh_set_auth_methods(session, methods);
     return SSH_AUTH_DENIED;
 }
 
@@ -780,7 +787,6 @@ static int auth_password(ssh_session session, const char *user, const char *pass
 static int auth_publickey(ssh_session session, const char *user, struct ssh_key_struct *pubkey, char signature_state, void *userdata)
 {
     ssh_server_config_t *config = (ssh_server_config_t *)userdata;
-    extern const uint8_t allowed_pubkeys[] asm("_binary_ssh_allowed_client_key_pub_start");
 
     if (user == NULL || strcmp(user, config->username) != 0) {
         return SSH_AUTH_DENIED;
@@ -789,7 +795,7 @@ static int auth_publickey(ssh_session session, const char *user, struct ssh_key_
 
     /* If client is probing supported keys (no signature), accept match to prompt
      * signature */
-    const char *cursor = (const char *)allowed_pubkeys;
+    const char *cursor = (const char *)config->allowed_pubkeys;
     while (cursor != NULL && *cursor != '\0') {
         const char *line_start = cursor;
         const char *nl = strchr(cursor, '\n');
@@ -1184,7 +1190,7 @@ static void ssh_server_internal(ssh_server_config_t *config)
         ESP_LOGD(TAG, "Key exchange completed or in progress");
 
         // Set up authentication methods
-        ssh_set_auth_methods(session, ALLOW_AUTH_METHODS);
+        auth_none(session, config->username, config);
         ESP_LOGD(TAG, "Authentication methods set");
 
         // Create event for session handling

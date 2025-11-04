@@ -46,6 +46,10 @@
 static const char* TAG = "example";
 #define PROMPT_STR CONFIG_IDF_TARGET
 
+#if CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
+extern const uint8_t allowed_pubkeys[] asm("_binary_ssh_allowed_client_key_pub_start");
+#endif
+
 /* Console command history can be stored to and loaded from a file.
  * The easiest way to do this is to use FATFS filesystem on top of
  * wear_levelling library.
@@ -221,6 +225,9 @@ void app_main(void)
         .username = CONFIG_EXAMPLE_DEFAULT_USERNAME,
 #if CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
         .password = CONFIG_EXAMPLE_DEFAULT_PASSWORD,
+#endif
+#if CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
+        .allowed_pubkeys = (const char *)allowed_pubkeys,
 #endif
     };
     ssh_server_start(&server_config);

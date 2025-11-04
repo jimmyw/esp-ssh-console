@@ -11,6 +11,9 @@ typedef struct {
 #if CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
     const char *password;
 #endif
+#if CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
+    const char *allowed_pubkeys;
+#endif
 } ssh_server_config_t;
 
 void ssh_server_start(ssh_server_config_t *config);
