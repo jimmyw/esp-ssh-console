@@ -18,8 +18,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "ssh_server.h"
-
 #include "esp_log.h"
 #include "esp_vfs.h"
 #include "esp_vfs_eventfd.h"
@@ -28,6 +26,7 @@
 #include "freertos/message_buffer.h"
 #include "freertos/task.h"
 
+#include "ssh_server.h"
 
 // Configuration (from Kconfig)
 #include "sdkconfig.h"
@@ -210,7 +209,7 @@ bail_out:
 static int shell_request(ssh_session session, ssh_channel channel, void *userdata)
 {
     ESP_LOGD(TAG, "Shell requested");
-    //ssh_server_config_t *config = (ssh_server_config_t *)userdata;
+    // ssh_server_config_t *config = (ssh_server_config_t *)userdata;
     int index;
     ssh_vfs_context_t *ctx = get_context_for_channel(channel, &index);
     if (!ctx) {
@@ -586,36 +585,50 @@ static ssize_t ssh_vfs_write(int fd, const void *data, size_t size)
         }
     }
 
-    // Allocate buffer for translated data (original size + extra bytes for \r)
-    // Maximum expansion: each \n becomes \r\n (adds 1 byte per LF)
-    size_t translated_size = size + lf_count;
-    char *translated_data = malloc(translated_size);
-    if (!translated_data) {
-        ESP_LOGE(TAG, "Failed to allocate buffer for line ending translation");
-        errno = ENOMEM;
-        return -1;
-    }
+    char *data_to_send = (char *)data;
+    size_t size_to_send = size;
 
-    // Translate \n to \r\n
-    size_t dst_idx = 0;
-    for (size_t i = 0; i < size; i++) {
-        if (src[i] == '\n') {
-            // Insert \r before \n
-            translated_data[dst_idx++] = '\r';
-            translated_data[dst_idx++] = '\n';
-        } else {
-            translated_data[dst_idx++] = src[i];
+    // Check if we need to translate line endings
+    if (lf_count > 0) {
+
+        // Allocate buffer for translated data (original size + extra bytes for \r)
+        // Maximum expansion: each \n becomes \r\n (adds 1 byte per LF)
+        size_t translated_size = size + lf_count;
+        char *translated_data = malloc(translated_size);
+        if (!translated_data) {
+            ESP_LOGE(TAG, "Failed to allocate buffer for line ending translation");
+            errno = ENOMEM;
+            return -1;
         }
+
+        // Translate \n to \r\n
+        size_t dst_idx = 0;
+        for (size_t i = 0; i < size; i++) {
+            if (src[i] == '\n') {
+                // Insert \r before \n
+                translated_data[dst_idx++] = '\r';
+                translated_data[dst_idx++] = '\n';
+            } else {
+                translated_data[dst_idx++] = src[i];
+            }
+        }
+
+        ESP_LOGD(TAG, "Sent %zu bytes (translated from %zu) to write_buffer index %d", translated_size, size, fd);
+        data_to_send = translated_data;
+        size_to_send = dst_idx;
     }
 
     // Send translated data to write buffer (blocking with max delay)
-    size_t bytes_sent = xMessageBufferSend(channels[fd].write_buffer, translated_data, translated_size, portMAX_DELAY);
+    size_t bytes_sent = xMessageBufferSend(channels[fd].write_buffer, data_to_send, size_to_send, portMAX_DELAY);
 
-    free(translated_data);
+    // If we allocated a new buffer, free it
+    if (data_to_send != data) {
+        free(data_to_send);
+    }
 
-    if (bytes_sent != translated_size) {
+    if (bytes_sent != size_to_send) {
         // Buffer is full - this is a flow control issue
-        ESP_LOGW(TAG, "Write buffer full, sent %zu/%zu bytes", bytes_sent, translated_size);
+        ESP_LOGW(TAG, "Write buffer full, sent %zu/%zu bytes", bytes_sent, size_to_send);
         if (bytes_sent == 0) {
             errno = EAGAIN;
             return -1;
@@ -628,10 +641,6 @@ static ssize_t ssh_vfs_write(int fd, const void *data, size_t size)
         write(wakeup_eventfd, &signal, sizeof(signal));
     }
 
-    ESP_LOGD(TAG, "Sent %zu bytes (translated from %zu) to write_buffer index %d", translated_size, size, fd);
-
-    // Return original size, not translated size, to the caller
-    // The caller expects to know how many of THEIR bytes were consumed
     return size;
 }
 
@@ -962,7 +971,7 @@ struct ssh_channel_callbacks_struct channel_cb = {
  */
 static ssh_channel channel_open(ssh_session session, void *userdata)
 {
-    //ssh_server_config_t *config = (ssh_server_config_t *)userdata;
+    // ssh_server_config_t *config = (ssh_server_config_t *)userdata;
 
     int index;
     ssh_vfs_context_t *ctx = get_context_for_channel(NULL, &index);
@@ -1035,7 +1044,6 @@ static int ssh_event_fd_wrapper_callback(socket_t fd, int revents, void *userdat
         for (uint32_t i = 0; i < value; i++) {
             drain_write_buffers();
         }
-
     }
 
     return SSH_OK;
@@ -1223,7 +1231,6 @@ static void ssh_server_internal(ssh_server_config_t *config)
             // Poll for SSH events (auth, channel requests, data, etc.)
             int poll_result = ssh_event_dopoll(event, 10000); // 10 second timeout
 
-
             if (poll_result == SSH_ERROR) {
                 poll_errors++;
                 ESP_LOGD(TAG, "Error polling events (count: %d): %s", poll_errors, ssh_get_error(session));
@@ -1271,5 +1278,4 @@ void ssh_server_start(ssh_server_config_t *config)
 {
     ESP_LOGI(TAG, "Starting SSH server...");
     xTaskCreate(&ssh_server, "ssh_server", 8192, (void *)config, 5, NULL);
-
 }
