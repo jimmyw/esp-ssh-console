@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 #include "linenoise/linenoise.h"
 #include "argtable3/argtable3.h"
+#include "esp_vfs_eventfd.h"
 #include "esp_vfs_fat.h"
 #include "esp_vfs_pipe.h"
 #include "nvs.h"
@@ -157,6 +158,10 @@ void app_main(void)
 
     esp_log_set_vprintf(log_func);
 
+
+        // This just enables the eventfd VFS feature.
+    esp_vfs_eventfd_config_t config = ESP_VFS_EVENTD_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_vfs_eventfd_register(&config));
 
 #if CONFIG_CONSOLE_STORE_HISTORY
     initialize_filesystem();
