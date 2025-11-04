@@ -39,6 +39,10 @@
 #define ALLOW_PASSWORD_AUTH (CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH)
 #define ALLOW_PUBLICKEY_AUTH (CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH)
 #define DEFAULT_USERNAME CONFIG_EXAMPLE_DEFAULT_USERNAME
+#define MAX_SSH_CHANNELS 10
+#define MAX_SSH_SIGNALS 3
+#define WRITE_BUFFER_SIZE 256
+#define READ_BUFFER_SIZE 256
 
 // Authentication methods
 #if ALLOW_PASSWORD_AUTH
@@ -77,12 +81,12 @@ typedef struct {
     TaskHandle_t shell_task_handle;
     MessageBufferHandle_t read_buffer;  // For SSH → VFS data flow
     MessageBufferHandle_t write_buffer; // For VFS → SSH data flow
-    signal_context_t signals[5];
+    signal_context_t signals[MAX_SSH_SIGNALS];
     ssh_server_config_t *config;
 } ssh_vfs_context_t;
 
 // Mapped to local fd
-ssh_vfs_context_t channels[10];
+static ssh_vfs_context_t channels[MAX_SSH_CHANNELS];
 
 static void trigger_select_for_channel(int fd, bool read, bool write, bool except);
 
@@ -370,7 +374,7 @@ static esp_err_t ssh_vfs_start_select(int nfds, fd_set *readfds, fd_set *writefd
             if (ctx->read_buffer) {
                 size_t available = xMessageBufferSpacesAvailable(ctx->read_buffer);
                 // If buffer is not full, it means there's data to read
-                if (available < 4096) {
+                if (available < READ_BUFFER_SIZE) {
                     fd_ready = true;
                 } else {
                     FD_CLR(i, readfds);
@@ -449,7 +453,7 @@ static esp_err_t ssh_vfs_end_select(void *end_select_args)
                 if (channels[i].read_buffer) {
                     size_t available = xMessageBufferSpacesAvailable(channels[i].read_buffer);
                     // If buffer is not full, it means there's data to read
-                    if (available >= 4096) {
+                    if (available >= READ_BUFFER_SIZE) {
                         FD_CLR(i, sig_ctx->read_fds);
                     }
                 }
@@ -505,7 +509,7 @@ static esp_err_t ssh_vfs_end_select(void *end_select_args)
 static ssize_t ssh_vfs_read(int fd, void *data, size_t size)
 {
     fd = fd >> 1;
-    if (fd >= 10 || channels[fd].channel == NULL || channels[fd].read_buffer == NULL) {
+    if (fd >= ARRAY_SIZE(channels) || channels[fd].channel == NULL || channels[fd].read_buffer == NULL) {
         errno = EBADF;
         return -1;
     }
@@ -644,7 +648,7 @@ static ssize_t ssh_vfs_write(int fd, const void *data, size_t size)
 static int ssh_vfs_close(int fd)
 {
     fd = fd >> 1;
-    if (fd >= 10 || channels[fd].channel == NULL) {
+    if (fd >= ARRAY_SIZE(channels) || channels[fd].channel == NULL) {
         return -1;
     }
 
@@ -975,7 +979,7 @@ static ssh_channel channel_open(ssh_session session, void *userdata)
     }
 
     // Create message buffer for this channel (4KB buffer)
-    ctx->read_buffer = xMessageBufferCreate(4096);
+    ctx->read_buffer = xMessageBufferCreate(READ_BUFFER_SIZE);
     if (!ctx->read_buffer) {
         ESP_LOGD(TAG, "Failed to create read message buffer");
         ssh_channel_free(ctx->channel);
@@ -984,7 +988,7 @@ static ssh_channel channel_open(ssh_session session, void *userdata)
     }
 
     // Create write message buffer for this channel (4KB buffer)
-    ctx->write_buffer = xMessageBufferCreate(4096);
+    ctx->write_buffer = xMessageBufferCreate(WRITE_BUFFER_SIZE);
     if (!ctx->write_buffer) {
         ESP_LOGD(TAG, "Failed to create write message buffer");
         vMessageBufferDelete(ctx->read_buffer);
