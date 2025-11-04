@@ -84,6 +84,22 @@ ssh_vfs_context_t channels[10];
 
 static void trigger_select_for_channel(int fd, bool read, bool write, bool except);
 
+// Call with NULL to find a free spot.
+static ssh_vfs_context_t *get_context_for_channel(ssh_channel channel, int *index_out)
+{
+    for (int i = 0; i < ARRAY_SIZE(channels); i++) {
+        ssh_vfs_context_t *ctx = &channels[i];
+        if (ctx->channel == channel) {
+            if (index_out) {
+                *index_out = i;
+            }
+            return ctx;
+        }
+    }
+    return NULL;
+}
+
+
 /**
  * @brief Drain write buffers and send data to SSH channels
  *
@@ -202,14 +218,8 @@ bail_out:
 static int shell_request(ssh_session session, ssh_channel channel, void *userdata)
 {
     ESP_LOGD(TAG, "Shell requested");
-    ssh_vfs_context_t *ctx = NULL;
     int index;
-    for (index = 0; index < sizeof(channels) / sizeof(channels[0]); index++) {
-        if (channels[index].channel == channel) {
-            ctx = &channels[index];
-            break;
-        }
-    }
+    ssh_vfs_context_t *ctx = get_context_for_channel(channel, &index);
     if (!ctx) {
         ESP_LOGD(TAG, "Shell requested but channel context not found");
         return SSH_ERROR;
@@ -263,13 +273,7 @@ static int channel_data(ssh_session session, ssh_channel channel, void *data, ui
     (void)userdata;
 
     // Find the channel context
-    ssh_vfs_context_t *ctx = NULL;
-    for (int i = 0; i < 10; i++) {
-        if (channels[i].channel == channel) {
-            ctx = &channels[i];
-            break;
-        }
-    }
+    ssh_vfs_context_t *ctx = get_context_for_channel(channel, NULL);
 
     if (!ctx || !ctx->read_buffer) {
         ESP_LOGW(TAG, "Channel data received but no context/buffer found");
@@ -381,8 +385,8 @@ static esp_err_t ssh_vfs_start_select(int nfds, fd_set *readfds, fd_set *writefd
         // Check if we're monitoring this fd for reading
         if (readfds && FD_ISSET(i, readfds)) {
             // Check if read buffer has data available
-            if (channels[i].read_buffer) {
-                size_t available = xMessageBufferSpacesAvailable(channels[i].read_buffer);
+            if (ctx->read_buffer) {
+                size_t available = xMessageBufferSpacesAvailable(ctx->read_buffer);
                 // If buffer is not full, it means there's data to read
                 if (available < 4096) {
                     fd_ready = true;
@@ -394,7 +398,7 @@ static esp_err_t ssh_vfs_start_select(int nfds, fd_set *readfds, fd_set *writefd
             }
 
             // Also check if channel is closed/eof
-            if (!ssh_channel_is_open(channels[i].channel) || ssh_channel_is_eof(channels[i].channel)) {
+            if (!ssh_channel_is_open(ctx->channel) || ssh_channel_is_eof(ctx->channel)) {
                 fd_ready = true;
             }
         }
@@ -402,8 +406,8 @@ static esp_err_t ssh_vfs_start_select(int nfds, fd_set *readfds, fd_set *writefd
         // Check if we're monitoring this fd for writing
         if (writefds && FD_ISSET(i, writefds)) {
             // Check if write buffer has space available
-            if (channels[i].write_buffer) {
-                size_t available = xMessageBufferSpacesAvailable(channels[i].write_buffer);
+            if (ctx->write_buffer) {
+                size_t available = xMessageBufferSpacesAvailable(ctx->write_buffer);
                 // If buffer has space, writing is possible
                 if (available > 0) {
                     fd_ready = true;
@@ -414,7 +418,7 @@ static esp_err_t ssh_vfs_start_select(int nfds, fd_set *readfds, fd_set *writefd
             }
 
             // If channel is closed, mark as ready (write will fail with error)
-            if (!ssh_channel_is_open(channels[i].channel)) {
+            if (!ssh_channel_is_open(ctx->channel)) {
                 fd_ready = true;
             }
         }
@@ -913,14 +917,8 @@ static int auth_publickey(ssh_session session, const char *user, struct ssh_key_
 static void vfs_channel_close(ssh_session session, ssh_channel channel, void *userdata)
 {
     ESP_LOGI(TAG, "Channel close requested");
-    ssh_vfs_context_t *ctx = NULL;
     int index;
-    for (index = 0; index < sizeof(channels) / sizeof(channels[0]); index++) {
-        if (channels[index].channel == channel) {
-            ctx = &channels[index];
-            break;
-        }
-    }
+    ssh_vfs_context_t *ctx = get_context_for_channel(channel, &index);
     if (!ctx) {
         ESP_LOGD(TAG, "Channel close requested but channel context not found");
         return;
@@ -974,16 +972,8 @@ static ssh_channel channel_open(ssh_session session, void *userdata)
 {
     (void)userdata;
 
-    ssh_vfs_context_t *ctx = NULL;
-    int index = -1;
-    for (int i = 0; i < 10; i++) {
-        if (channels[i].channel == NULL) {
-            ctx = &channels[i];
-            index = i;
-            break;
-        }
-    }
-
+    int index;
+    ssh_vfs_context_t *ctx = get_context_for_channel(NULL, &index);
     if (ctx == NULL) {
         ESP_LOGD(TAG, "No free channel found");
         return NULL;
