@@ -509,11 +509,7 @@ static ssize_t ssh_vfs_read(int fd, void *data, size_t size)
         return -1;
     }
 
-    for (size_t i = 0; i < size; i++) {
-        if (((char *)data)[i] == '\r') {
-            ((char *)data)[i] = '\n';
-        }
-    }
+
 
     // Block until data is available (with timeout)
     size_t bytes_received = xMessageBufferReceive(channels[fd].read_buffer, data, size,
@@ -528,6 +524,12 @@ static ssize_t ssh_vfs_read(int fd, void *data, size_t size)
         }
         errno = EAGAIN;
         return -1;
+    }
+
+    for (size_t i = 0; i < bytes_received; i++) {
+        if (((char *)data)[i] == '\r') {
+            ((char *)data)[i] = '\n';
+        }
     }
 
     ESP_LOGD(TAG, "VFS read %zu bytes from message buffer", bytes_received);
