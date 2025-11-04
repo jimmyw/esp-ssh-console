@@ -912,6 +912,37 @@ static int auth_publickey(ssh_session session, const char *user, struct ssh_key_
 
 static void vfs_channel_close(ssh_session session, ssh_channel channel, void *userdata)
 {
+    ESP_LOGI(TAG, "Channel close requested");
+    ssh_vfs_context_t *ctx = NULL;
+    int index;
+    for (index = 0; index < sizeof(channels) / sizeof(channels[0]); index++) {
+        if (channels[index].channel == channel) {
+            ctx = &channels[index];
+            break;
+        }
+    }
+    if (!ctx) {
+        ESP_LOGD(TAG, "Channel close requested but channel context not found");
+        return;
+    }
+    // Close the VFS fds
+    if (ctx->shell_task_handle) {
+        vTaskDelete(ctx->shell_task_handle);
+        ctx->shell_task_handle = NULL;
+    }
+    if (ctx->stdin_fd >= 0) {
+        close(ctx->stdin_fd);
+        esp_vfs_unregister_fd(s_pipe_vfs_id, ctx->stdin_fd);
+        ctx->stdin_fd = -1;
+    }
+    if (ctx->stdout_fd >= 0) {
+        close(ctx->stdout_fd);
+        esp_vfs_unregister_fd(s_pipe_vfs_id, ctx->stdout_fd);
+        ctx->stdout_fd = -1;
+    }
+
+    // Free the channel context
+    memset(ctx, 0, sizeof(ssh_vfs_context_t));
 }
 
 struct ssh_channel_callbacks_struct channel_cb = {
