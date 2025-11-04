@@ -6,6 +6,11 @@ typedef struct {
     uint32_t shell_task_size;
     const char *bindaddr;
     const char *port;
+    const char *debug_level;
+    const char *username;
+#if CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
+    const char *password;
+#endif
 } ssh_server_config_t;
 
 void ssh_server_start(ssh_server_config_t *config);

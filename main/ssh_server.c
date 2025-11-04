@@ -33,25 +33,17 @@
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
-#define DEFAULT_PORT CONFIG_EXAMPLE_DEFAULT_PORT
-#define DEBUG_LEVEL CONFIG_EXAMPLE_DEBUG_LEVEL
-#define ALLOW_PASSWORD_AUTH (CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH)
-#define ALLOW_PUBLICKEY_AUTH (CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH)
-#define DEFAULT_USERNAME CONFIG_EXAMPLE_DEFAULT_USERNAME
 #define MAX_SSH_CHANNELS 10
 #define MAX_SSH_SIGNALS 3
 #define WRITE_BUFFER_SIZE 256
 #define READ_BUFFER_SIZE 256
 
 // Authentication methods
-#if ALLOW_PASSWORD_AUTH
-#define DEFAULT_PASSWORD CONFIG_EXAMPLE_DEFAULT_PASSWORD
-#endif
-#if ALLOW_PASSWORD_AUTH && ALLOW_PUBLICKEY_AUTH
+#if CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH && CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
 #define ALLOW_AUTH_METHODS (SSH_AUTH_METHOD_PASSWORD | SSH_AUTH_METHOD_PUBLICKEY)
-#elif ALLOW_PASSWORD_AUTH
+#elif CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
 #define ALLOW_AUTH_METHODS (SSH_AUTH_METHOD_PASSWORD)
-#elif ALLOW_PUBLICKEY_AUTH
+#elif CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
 #define ALLOW_AUTH_METHODS (SSH_AUTH_METHOD_PUBLICKEY)
 #else
 #define ALLOW_AUTH_METHODS (0)
@@ -740,7 +732,7 @@ static int auth_none(ssh_session session, const char *user, void *userdata)
     return SSH_AUTH_DENIED;
 }
 
-#if ALLOW_PASSWORD_AUTH
+#if CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
 /**
  * @brief SSH password authentication callback
  *
@@ -761,10 +753,11 @@ static int auth_none(ssh_session session, const char *user, void *userdata)
  */
 static int auth_password(ssh_session session, const char *user, const char *password, void *userdata)
 {
+    ssh_server_config_t *config = (ssh_server_config_t *)userdata;
 
     ESP_LOGD(TAG, "Password auth attempt for user: %s", user);
 
-    if (strcmp(user, DEFAULT_USERNAME) == 0 && strcmp(password, DEFAULT_PASSWORD) == 0) {
+    if (strcmp(user, config->username) == 0 && strcmp(password, config->password) == 0) {
         authenticated = 1;
         ESP_LOGD(TAG, "Authentication successful for user: %s", user);
         return SSH_AUTH_SUCCESS;
@@ -780,15 +773,16 @@ static int auth_password(ssh_session session, const char *user, const char *pass
     ESP_LOGD(TAG, "Authentication failed (attempt %d/3)", tries);
     return SSH_AUTH_DENIED;
 }
-#endif // ALLOW_PASSWORD_AUTH
+#endif // CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
 
-#if ALLOW_PUBLICKEY_AUTH
+#if CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
 /* Public key authentication using in-memory authorized_keys list */
 static int auth_publickey(ssh_session session, const char *user, struct ssh_key_struct *pubkey, char signature_state, void *userdata)
 {
+    ssh_server_config_t *config = (ssh_server_config_t *)userdata;
     extern const uint8_t allowed_pubkeys[] asm("_binary_ssh_allowed_client_key_pub_start");
 
-    if (user == NULL || strcmp(user, DEFAULT_USERNAME) != 0) {
+    if (user == NULL || strcmp(user, config->username) != 0) {
         return SSH_AUTH_DENIED;
     }
     ESP_LOGI("DEBUG", "Public key authentication requested for user: %s", user);
@@ -913,7 +907,7 @@ static int auth_publickey(ssh_session session, const char *user, struct ssh_key_
 
     return SSH_AUTH_DENIED;
 }
-#endif // ALLOW_PUBLICKEY_AUTH
+#endif // CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
 
 static void vfs_channel_close(ssh_session session, ssh_channel channel, void *userdata)
 {
@@ -1104,9 +1098,9 @@ static void ssh_server_internal(ssh_server_config_t *config)
     // Set bind options
     ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_BINDADDR, config->bindaddr);
     ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_BINDPORT_STR, config->port);
-#ifdef DEBUG_LEVEL
-    ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_LOG_VERBOSITY_STR, DEBUG_LEVEL);
-#endif
+    if (config->debug_level) {
+        ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_LOG_VERBOSITY_STR, config->debug_level);
+    }
 
     // Set host key
     rc = set_hostkey(sshbind);
@@ -1125,8 +1119,8 @@ static void ssh_server_internal(ssh_server_config_t *config)
     }
 
     ESP_LOGD(TAG, "Simple SSH Server listening on %s:%s", config->bindaddr, config->port);
-#if ALLOW_PASSWORD_AUTH
-    ESP_LOGD(TAG, "Default credentials: %s/%s", DEFAULT_USERNAME, DEFAULT_PASSWORD);
+#if CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
+    ESP_LOGD(TAG, "Default credentials: %s/%s", config->username, config->password);
 #endif
 
     // Accept connections
@@ -1150,10 +1144,10 @@ static void ssh_server_internal(ssh_server_config_t *config)
         struct ssh_server_callbacks_struct server_cb = {
             .userdata = config,
             .auth_none_function = auth_none,
-#if ALLOW_PASSWORD_AUTH
+#if CONFIG_EXAMPLE_ALLOW_PASSWORD_AUTH
             .auth_password_function = auth_password,
 #endif
-#if ALLOW_PUBLICKEY_AUTH
+#if CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
             .auth_pubkey_function = auth_publickey,
 #endif
             .channel_open_request_session_function = channel_open,
