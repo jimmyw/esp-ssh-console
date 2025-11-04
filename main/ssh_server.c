@@ -170,6 +170,8 @@ bail_out:
     __getreent()->_stderr = orig_stderr;
     if (new_stdin)
         fclose(new_stdin);
+    if (new_stdout)
+        fclose(new_stdout);
     vTaskDelete(NULL);
 }
 
