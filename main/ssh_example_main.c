@@ -82,7 +82,8 @@ static void initialize_nvs(void)
     ESP_ERROR_CHECK(err);
 }
 
-void run_linenoise_console(const char* prompt) {
+static void run_linenoise_console(void * ctx) {
+    const char* prompt = (const char*)ctx;
         /* Get a line using linenoise.
          * The line is returned when ENTER is pressed.
          */
@@ -150,10 +151,6 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing TCP/IP network stack...");
     ESP_ERROR_CHECK(esp_netif_init());
 
-    // Give LWIP TCP/IP thread time to start and initialize mailboxes
-    ESP_LOGI(TAG, "Waiting for TCP/IP stack to fully initialize...");
-    vTaskDelay(pdMS_TO_TICKS(500));
-
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     esp_log_set_vprintf(log_func);
@@ -212,19 +209,17 @@ void app_main(void)
     ESP_LOGI(TAG, "Starting network connection...");
     ESP_ERROR_CHECK(example_connect());
 
-    // Add a small delay to ensure LWIP TCP/IP stack is fully ready after connection
-    ESP_LOGI(TAG, "Network connected successfully, ensuring TCP/IP stack is ready...");
-    vTaskDelay(pdMS_TO_TICKS(2000));
-
+    // Start SSH server
+    ESP_LOGI(TAG, "Starting SSH server...");
     ssh_server_config_t server_config = {
-        .prompt = prompt,
+        .shell_func = run_linenoise_console,
+        .shell_func_ctx = (void *)prompt,
     };
-
     ssh_server_start(&server_config);
 
     /* Main loop */
     while(true) {
-        run_linenoise_console(prompt);
+        run_linenoise_console((void *)prompt);
     }
 
     ESP_LOGE(TAG, "Error or end-of-input, terminating console");

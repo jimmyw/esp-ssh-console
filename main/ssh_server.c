@@ -179,17 +179,11 @@ static void app_shell(void *arg)
     fprintf(new_stdout, "\r\nWelcome to the ESP SHELL!\r\n");
     fflush(new_stdout);
 
-    // new_stdout = fdopen(fd, "w");
-    // if (!new_stdout) {
-    //     ESP_LOGD(TAG, "Failed to fdopen stdout for fd %d errno: %d", fd, errno);
-    //     goto bail_out;
-    // }
     __getreent()->_stdin = new_stdin;
     __getreent()->_stdout = new_stdout;
-    //__getreent()->_stderr = fdopen(fd, "w");
 
     while (ssh_channel_is_open(channel) && !ssh_channel_is_eof(channel)) {
-        run_linenoise_console(ctx->config->prompt);
+        ctx->config->shell_func(ctx->config->shell_func_ctx);
     }
 bail_out:
     __getreent()->_stdin = orig_stdin;
@@ -197,8 +191,6 @@ bail_out:
     __getreent()->_stderr = orig_stderr;
     if (new_stdin)
         fclose(new_stdin);
-    // if (new_stdout)
-    //     fclose(new_stdout);
     vTaskDelete(NULL);
 }
 
