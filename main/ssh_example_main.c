@@ -216,9 +216,6 @@ void app_main(void)
     // Start SSH server
     ESP_LOGI(TAG, "Starting SSH server...");
     ssh_server_config_t server_config = {
-        .shell_func = run_linenoise_console,
-        .shell_func_ctx = (void *)prompt,
-        .shell_task_size = 8192,
         .bindaddr = "0.0.0.0",
         .port = "22",
         .debug_level = CONFIG_EXAMPLE_DEBUG_LEVEL,
@@ -229,6 +226,10 @@ void app_main(void)
 #if CONFIG_EXAMPLE_ALLOW_PUBLICKEY_AUTH
         .allowed_pubkeys = (const char *)allowed_pubkeys,
 #endif
+        .shell_func = run_linenoise_console,
+        .shell_func_ctx = (void *)prompt,
+        .shell_task_size = 8192,
+        .shell_task_kill_on_disconnect = true,
     };
     ssh_server_start(&server_config);
 

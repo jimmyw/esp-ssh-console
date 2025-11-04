@@ -135,8 +135,6 @@ static void drain_write_buffers(void)
     }
 }
 
-void run_linenoise_console(const char *prompt);
-
 static void ssh_shell(void *arg)
 {
     ssh_vfs_context_t *ctx = (ssh_vfs_context_t *)arg;
@@ -917,6 +915,7 @@ static int auth_publickey(ssh_session session, const char *user, struct ssh_key_
 
 static void vfs_channel_close(ssh_session session, ssh_channel channel, void *userdata)
 {
+    ssh_server_config_t *config = (ssh_server_config_t *)userdata;
     ESP_LOGI(TAG, "Channel close requested");
     int index;
     ssh_vfs_context_t *ctx = get_context_for_channel(channel, &index);
@@ -924,8 +923,13 @@ static void vfs_channel_close(ssh_session session, ssh_channel channel, void *us
         ESP_LOGD(TAG, "Channel close requested but channel context not found");
         return;
     }
+
+    // Trigger select to wake up any pending operations
+    trigger_select_for_channel(ctx->stdin_fd, false, false, true);
+    trigger_select_for_channel(ctx->stdout_fd, false, false, true);
+
     // Close the VFS fds
-    if (ctx->shell_task_handle) {
+    if (config->shell_task_kill_on_disconnect && ctx->shell_task_handle) {
         vTaskDelete(ctx->shell_task_handle);
         ctx->shell_task_handle = NULL;
     }
