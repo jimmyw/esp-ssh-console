@@ -151,7 +151,7 @@ static void drain_write_buffers(void)
 
 void run_linenoise_console(const char *prompt);
 
-static void app_shell(void *arg)
+static void ssh_shell(void *arg)
 {
     ssh_vfs_context_t *ctx = (ssh_vfs_context_t *)arg;
     ssh_channel channel = ctx->channel;
@@ -211,7 +211,7 @@ bail_out:
 static int shell_request(ssh_session session, ssh_channel channel, void *userdata)
 {
     ESP_LOGD(TAG, "Shell requested");
-    ssh_server_config_t *config = (ssh_server_config_t *)userdata;
+    //ssh_server_config_t *config = (ssh_server_config_t *)userdata;
     int index;
     ssh_vfs_context_t *ctx = get_context_for_channel(channel, &index);
     if (!ctx) {
@@ -239,7 +239,7 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
     write(ctx->stdout_fd, shell_start_msg, sizeof(shell_start_msg) - 1);
 
     ESP_LOGD(TAG, "Shell setup completed successfully");
-    xTaskCreate(&app_shell, "app_shell", 8192, (void *)ctx, 5, &ctx->shell_task_handle);
+    xTaskCreate(&ssh_shell, "ssh_shell", 8192, (void *)ctx, 5, &ctx->shell_task_handle);
     return SSH_OK;
 }
 
