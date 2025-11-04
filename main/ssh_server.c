@@ -18,7 +18,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "esp_event.h"
+#include "ssh_server.h"
+
 #include "esp_log.h"
 #include "esp_vfs.h"
 #include "esp_vfs_eventfd.h"
@@ -27,8 +28,6 @@
 #include "freertos/message_buffer.h"
 #include "freertos/task.h"
 
-#include "nvs_flash.h"
-#include "protocol_examples_common.h"
 
 // Configuration (from Kconfig)
 #include "sdkconfig.h"

@@ -29,7 +29,7 @@
 #include "cmd_nvs.h"
 #include "console_settings.h"
 #include "sys/termios.h"
-#include "server.h"
+#include "ssh_server.h"
 #include "protocol_examples_common.h"
 
 /*
