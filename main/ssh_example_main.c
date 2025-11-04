@@ -214,6 +214,7 @@ void app_main(void)
     ssh_server_config_t server_config = {
         .shell_func = run_linenoise_console,
         .shell_func_ctx = (void *)prompt,
+        .shell_task_size = 8192,
     };
     ssh_server_start(&server_config);
 

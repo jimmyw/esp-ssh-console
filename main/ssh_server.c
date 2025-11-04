@@ -160,9 +160,6 @@ static void ssh_shell(void *arg)
 
     ESP_LOGD(TAG, "Shell created, setting stdout and stdin to fd %d, %d", ctx->stdout_fd, ctx->stdin_fd);
 
-    static const char shell_start_msg[] = "Wait for it...\r\n";
-    write(ctx->stdout_fd, shell_start_msg, sizeof(shell_start_msg) - 1);
-
     FILE *orig_stdin = __getreent()->_stdin;
     FILE *orig_stdout = __getreent()->_stdout;
     FILE *orig_stderr = __getreent()->_stderr;
@@ -176,8 +173,6 @@ static void ssh_shell(void *arg)
         ESP_LOGD(TAG, "Failed to fdopen stdout for fd %d errno: %d", ctx->stdout_fd, errno);
         goto bail_out;
     }
-    fprintf(new_stdout, "\r\nWelcome to the ESP SHELL!\r\n");
-    fflush(new_stdout);
 
     __getreent()->_stdin = new_stdin;
     __getreent()->_stdout = new_stdout;
@@ -219,9 +214,6 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
         return SSH_ERROR;
     }
 
-    static const char welcome_msg[] = "Welcome to the ESP SSH Server, setting up fd\r\n";
-    ssh_channel_write(ctx->channel, welcome_msg, sizeof(welcome_msg) - 1);
-
     ESP_LOGD(TAG, "Channel %d registering VFS fd", index);
 
     esp_err_t res = esp_vfs_register_fd_with_local_fd(s_pipe_vfs_id, index << 1, false, &ctx->stdin_fd);
@@ -235,11 +227,8 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
         return SSH_ERROR;
     }
 
-    static const char shell_start_msg[] = "Starting shell...\r\n";
-    write(ctx->stdout_fd, shell_start_msg, sizeof(shell_start_msg) - 1);
-
     ESP_LOGD(TAG, "Shell setup completed successfully");
-    xTaskCreate(&ssh_shell, "ssh_shell", 8192, (void *)ctx, 5, &ctx->shell_task_handle);
+    xTaskCreate(&ssh_shell, "ssh_shell", ctx->config->shell_task_size, (void *)ctx, 5, &ctx->shell_task_handle);
     return SSH_OK;
 }
 
@@ -1021,7 +1010,7 @@ static int set_hostkey(ssh_bind sshbind)
     extern const uint8_t hostkey[] asm("_binary_ssh_host_ed25519_key_start");
     int rc = ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_IMPORT_KEY_STR, hostkey);
     if (rc != SSH_OK) {
-        fprintf(stderr, "Failed to set hardcoded private key: %s", ssh_get_error(sshbind));
+        ESP_LOGE(TAG, "Failed to set hardcoded private key: %s", ssh_get_error(sshbind));
         return SSH_ERROR;
     }
 
@@ -1065,20 +1054,20 @@ static void ssh_server_internal(ssh_server_config_t *config)
     // Initialize libssh
     rc = ssh_init();
     if (rc != SSH_OK) {
-        fprintf(stderr, "Failed to initialize libssh: %d", rc);
+        ESP_LOGE(TAG, "Failed to initialize libssh: %d", rc);
         return;
     }
 
     esp_err_t res = esp_vfs_register_with_id(&vfs, NULL, &s_pipe_vfs_id);
     if (res != ESP_OK) {
-        fprintf(stderr, "Failed to register VFS: %d", res);
+        ESP_LOGE(TAG, "Failed to register VFS: %d", res);
         return;
     }
 
     // Create eventfd for waking up the SSH event loop when data is written
     wakeup_eventfd = eventfd(0, 0);
     if (wakeup_eventfd == -1) {
-        fprintf(stderr, "Failed to create eventfd: %d", errno);
+        ESP_LOGE(TAG, "Failed to create eventfd: %d", errno);
         esp_vfs_unregister_with_id(s_pipe_vfs_id);
         return;
     }
@@ -1087,7 +1076,7 @@ static void ssh_server_internal(ssh_server_config_t *config)
     // Create SSH bind object
     sshbind = ssh_bind_new();
     if (sshbind == NULL) {
-        fprintf(stderr, "Failed to create SSH bind object");
+        ESP_LOGE(TAG, "Failed to create SSH bind object");
         return;
     }
 
@@ -1108,8 +1097,8 @@ static void ssh_server_internal(ssh_server_config_t *config)
     // Listen for connections
     rc = ssh_bind_listen(sshbind);
     if (rc != SSH_OK) {
-        fprintf(stderr, "Failed to listen on 0.0.0.0:%s: %s", port, ssh_get_error(sshbind));
-        fprintf(stderr, "This could indicate that the network stack is not ready yet.");
+        ESP_LOGE(TAG, "Failed to listen on 0.0.0.0:%s: %s", port, ssh_get_error(sshbind));
+        ESP_LOGE(TAG, "This could indicate that the network stack is not ready yet.");
         ssh_bind_free(sshbind);
         return;
     }
@@ -1123,13 +1112,13 @@ static void ssh_server_internal(ssh_server_config_t *config)
     while (1) {
         session = ssh_new();
         if (session == NULL) {
-            fprintf(stderr, "Failed to create session");
+            ESP_LOGE(TAG, "Failed to create session");
             continue;
         }
 
         rc = ssh_bind_accept(sshbind, session);
         if (rc != SSH_OK) {
-            fprintf(stderr, "Failed to accept connection: %s", ssh_get_error(sshbind));
+            ESP_LOGE(TAG, "Failed to accept connection: %s", ssh_get_error(sshbind));
             ssh_free(session);
             continue;
         }
@@ -1171,7 +1160,7 @@ static void ssh_server_internal(ssh_server_config_t *config)
         }
 
         if (rc == SSH_ERROR) {
-            fprintf(stderr, "Key exchange failed: %s (bind: %s)", ssh_get_error(session), ssh_get_error(sshbind));
+            ESP_LOGE(TAG, "Key exchange failed: %s (bind: %s)", ssh_get_error(session), ssh_get_error(sshbind));
             ssh_disconnect(session);
             ssh_free(session);
             continue;
@@ -1186,7 +1175,7 @@ static void ssh_server_internal(ssh_server_config_t *config)
         // Create event for session handling
         event = ssh_event_new();
         if (event == NULL) {
-            fprintf(stderr, "Failed to create event");
+            ESP_LOGE(TAG, "Failed to create event");
             ssh_disconnect(session);
             ssh_free(session);
             continue;
@@ -1194,7 +1183,7 @@ static void ssh_server_internal(ssh_server_config_t *config)
 
         // Add wakeup eventfd to the event loop
         if (ssh_event_add_fd(event, wakeup_eventfd, POLLIN, ssh_event_fd_wrapper_callback, NULL) != SSH_OK) {
-            fprintf(stderr, "Failed to add wakeup eventfd to event");
+            ESP_LOGE(TAG, "Failed to add wakeup eventfd to event");
             ssh_event_free(event);
             ssh_disconnect(session);
             ssh_free(session);
@@ -1203,7 +1192,7 @@ static void ssh_server_internal(ssh_server_config_t *config)
 
         // Add session to event
         if (ssh_event_add_session(event, session) != SSH_OK) {
-            fprintf(stderr, "Failed to add session to event");
+            ESP_LOGE(TAG, "Failed to add session to event");
             ssh_event_free(event);
             ssh_disconnect(session);
             ssh_free(session);
