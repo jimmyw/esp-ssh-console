@@ -21,6 +21,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_vfs.h"
+#include "esp_vfs_eventfd.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/message_buffer.h"
@@ -60,6 +61,7 @@ static int authenticated = 0;
 static int tries = 0;
 
 static esp_vfs_id_t s_pipe_vfs_id = -1;
+static int wakeup_eventfd = -1; // Event FD for waking up SSH event loop
 
 typedef struct {
     esp_vfs_select_sem_t sem;
@@ -72,7 +74,7 @@ typedef struct {
     ssh_channel channel;
     int stdin_fd;
     int stdout_fd;
-    //int stderr_fd;
+    // int stderr_fd;
     TaskHandle_t shell_task_handle;
     MessageBufferHandle_t read_buffer;  // For SSH → VFS data flow
     MessageBufferHandle_t write_buffer; // For VFS → SSH data flow
@@ -98,7 +100,6 @@ static ssh_vfs_context_t *get_context_for_channel(ssh_channel channel, int *inde
     }
     return NULL;
 }
-
 
 /**
  * @brief Drain write buffers and send data to SSH channels
@@ -240,7 +241,6 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
         ESP_LOGD(TAG, "Failed to register VFS fd: %d", res);
         return SSH_ERROR;
     }
-
 
     static const char shell_start_msg[] = "Starting shell...\r\n";
     write(ctx->stdout_fd, shell_start_msg, sizeof(shell_start_msg) - 1);
@@ -636,6 +636,12 @@ static ssize_t ssh_vfs_write(int fd, const void *data, size_t size)
         }
     }
 
+    // Wake up the SSH event loop to process the write immediately
+    if (wakeup_eventfd >= 0) {
+        uint64_t signal = 1;
+        write(wakeup_eventfd, &signal, sizeof(signal));
+    }
+
     ESP_LOGD(TAG, "Sent %zu bytes (translated from %zu) to write_buffer index %d", translated_size, size, fd);
 
     // Return original size, not translated size, to the caller
@@ -1029,6 +1035,25 @@ static int set_hostkey(ssh_bind sshbind)
     return SSH_OK;
 }
 
+static int ssh_event_fd_wrapper_callback(socket_t fd, int revents, void *userdata)
+{
+    (void)fd;
+    (void)userdata;
+
+    if (revents & POLLIN) {
+        uint64_t value;
+        read(wakeup_eventfd, &value, sizeof(value));
+        ESP_LOGD(TAG, "Woke up SSH event loop from eventfd, value=%llu", value);
+        // Drain write buffers after processing SSH events (same thread context!)
+        for (uint32_t i = 0; i < value; i++) {
+            drain_write_buffers();
+        }
+
+    }
+
+    return SSH_OK;
+}
+
 static void ssh_server(void *parameters)
 {
 
@@ -1055,6 +1080,15 @@ static void ssh_server(void *parameters)
         fprintf(stderr, "Failed to register VFS: %d", res);
         return;
     }
+
+    // Create eventfd for waking up the SSH event loop when data is written
+    wakeup_eventfd = eventfd(0, 0);
+    if (wakeup_eventfd == -1) {
+        fprintf(stderr, "Failed to create eventfd: %d", errno);
+        esp_vfs_unregister_with_id(s_pipe_vfs_id);
+        return;
+    }
+    ESP_LOGD(TAG, "Created wakeup eventfd: %d", wakeup_eventfd);
 
     // Create SSH bind object
     sshbind = ssh_bind_new();
@@ -1164,6 +1198,15 @@ static void ssh_server(void *parameters)
             continue;
         }
 
+        // Add wakeup eventfd to the event loop
+        if (ssh_event_add_fd(event, wakeup_eventfd, POLLIN, ssh_event_fd_wrapper_callback, NULL) != SSH_OK) {
+            fprintf(stderr, "Failed to add wakeup eventfd to event");
+            ssh_event_free(event);
+            ssh_disconnect(session);
+            ssh_free(session);
+            continue;
+        }
+
         // Add session to event
         if (ssh_event_add_session(event, session) != SSH_OK) {
             fprintf(stderr, "Failed to add session to event");
@@ -1191,10 +1234,8 @@ static void ssh_server(void *parameters)
             }
 
             // Poll for SSH events (auth, channel requests, data, etc.)
-            int poll_result = ssh_event_dopoll(event, 1000); // 1 second timeout
+            int poll_result = ssh_event_dopoll(event, 10000); // 10 second timeout
 
-            // Drain write buffers after processing SSH events (same thread context!)
-            drain_write_buffers();
 
             if (poll_result == SSH_ERROR) {
                 poll_errors++;
@@ -1217,6 +1258,14 @@ static void ssh_server(void *parameters)
     }
 
     // Clean up
+    if (wakeup_eventfd >= 0) {
+        close(wakeup_eventfd);
+        wakeup_eventfd = -1;
+    }
+    if (s_pipe_vfs_id != -1) {
+        esp_vfs_unregister_with_id(s_pipe_vfs_id);
+        s_pipe_vfs_id = -1;
+    }
     ssh_bind_free(sshbind);
     ssh_finalize();
 }
